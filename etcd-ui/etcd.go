@@ -1,18 +1,21 @@
 package main
 
 import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io/ioutil"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/kubernetes/pkg/version"
 	"net/http"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"fmt"
-	"encoding/json"
-	"io/ioutil"
-	"flag"
 	"os"
 )
 
 var kubeClient *kubernetes.Clientset = nil
+var master string = ""
+var groupVersion string = ""
 
 type TreeNode struct{
 	Label string `json:"label"`
@@ -20,24 +23,33 @@ type TreeNode struct{
 }
 func main() {
 
-	//var kubeconfig = "F:/ssl/1/admin.conf";//
+/*	var kubeconfig = "F:/ssl/1/admin.conf";//
+
+	if(kubeconfig == ""){
+		fmt.Println("kubeconfig is required.")
+		os.Exit(0);
+	}*/
+
 	kubeconfig := flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	flag.Parse()
 	if(*kubeconfig == ""){
 		fmt.Println("kubeconfig is required.")
 		os.Exit(0);
 	}
-
+	
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	master = config.Host
 	if err != nil {
 		panic(err.Error())
 	}
 
 	client, err := kubernetes.NewForConfig(config)
 
+	groupVersion = client.RESTClient().APIVersion().Version
 	if err != nil {
 		panic(err.Error())
 	}
+
 	kubeClient = client
 	http.HandleFunc("/", filter)
 
@@ -63,6 +75,8 @@ func filter(w http.ResponseWriter, r *http.Request){
 		return
 	}
 	switch r.RequestURI {
+		case "/cluster": cluster(w,r)
+			break
 		case "/namespace": namespace(w,r)
 			break
 		case "/deployment": deployment(w,r)
@@ -111,6 +125,37 @@ func filter(w http.ResponseWriter, r *http.Request){
 
 }
 
+
+func cluster(w http.ResponseWriter, r *http.Request) { //返回数据格式是json
+	infos := []string{}
+	infos = append(infos,"Kubernetes master is running at "+master)
+	services,_:= kubeClient.CoreV1().Services("").List(metav1.ListOptions{})
+
+	for _,svc := range services.Items{
+		if svc.Name == "eventer" {
+			infos = append(infos,"Heapster is running at "+master+"/api/"+groupVersion+"/namespaces/kube-system/services/eventer/proxy")
+			fmt.Println(infos[1])
+		}
+		if svc.Name == "heapster" {
+			infos = append(infos,"Heapster is running at "+master+"/api/v1/namespaces/kube-system/services/heapster/proxy")
+
+		}
+	}
+	serverVersion,_:= kubeClient.ServerVersion()
+	clientVersion := version.Get()
+	result := struct {
+		ServerVersion interface{}
+		ClientVersion interface{}
+		Information []string
+	}{
+		serverVersion,
+		clientVersion,
+		infos,
+	}
+
+	data,_ := json.Marshal(result)
+	fmt.Fprintf(w, string(data))
+}
 
 func namespace(w http.ResponseWriter, r *http.Request) { //返回数据格式是json
 	namespaces,err:= kubeClient.CoreV1().Namespaces().List(metav1.ListOptions{})
